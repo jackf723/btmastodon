@@ -29,6 +29,7 @@ class TimelineChoice:
     links: list[str]
     reply_to_id: str
     reply_to_acct: str
+    boost_id: str
     page_id: str
 
 
@@ -78,6 +79,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     post_parser.set_defaults(func=post)
 
+    boost_parser = subcommands.add_parser("boost", help="Boost a status")
+    boost_parser.add_argument("status_id", help="Status ID to boost")
+    boost_parser.set_defaults(func=boost)
+
     return parser
 
 
@@ -110,9 +115,9 @@ def menu() -> int:
                 instance = dialogs.request_input("Instance host, for example mastodon.social: ")
                 login(argparse.Namespace(instance=instance))
             elif choice == "home timeline":
-                timeline(argparse.Namespace(limit=menu_limit()))
+                timeline(argparse.Namespace(limit=20))
             elif choice == "notifications":
-                notifications(argparse.Namespace(limit=menu_limit()))
+                notifications(argparse.Namespace(limit=20))
             elif choice == "4":
                 whoami(argparse.Namespace())
             elif choice == "post status":
@@ -205,6 +210,13 @@ def post(args: argparse.Namespace) -> int:
     return 0
 
 
+def boost(args: argparse.Namespace) -> int:
+    client = MastodonClient(load_config())
+    status = client.boost_status(args.status_id)
+    dialogs.showMessage(f"Boosted:\n{render_status(status)}")
+    return 0
+
+
 def timeline_choice_from_status(status: dict, index: int) -> TimelineChoice:
     reply_to_id, reply_to_acct = status_reply_target(status)
     return TimelineChoice(
@@ -212,6 +224,7 @@ def timeline_choice_from_status(status: dict, index: int) -> TimelineChoice:
         status_links(status),
         reply_to_id,
         reply_to_acct,
+        reply_to_id,
         str(status.get("id") or ""),
     )
 
@@ -223,6 +236,7 @@ def timeline_choice_from_notification(notification: dict, index: int) -> Timelin
         notification_links(notification),
         reply_to_id,
         reply_to_acct,
+        reply_to_id,
         "",
     )
 
@@ -322,6 +336,8 @@ def open_timeline_choice(client: MastodonClient, item: TimelineChoice) -> None:
         actions.append("Open Link")
     if item.reply_to_id:
         actions.append("Reply")
+    if item.boost_id:
+        actions.append("Boost")
     actions.extend(["View Conversation", BACK_CHOICE])
 
     choice = dialogs.request_choice(actions, "Toot Actions")
@@ -332,6 +348,8 @@ def open_timeline_choice(client: MastodonClient, item: TimelineChoice) -> None:
         open_timeline_links(item.links)
     elif choice == "reply":
         reply_to_toot(item)
+    elif choice == "boost":
+        boost_toot(client, item)
     elif choice == "view conversation":
         view_conversation(client, item)
 
@@ -372,6 +390,15 @@ def reply_to_toot(item: TimelineChoice) -> None:
             in_reply_to_id=item.reply_to_id,
         )
     )
+
+
+def boost_toot(client: MastodonClient, item: TimelineChoice) -> None:
+    if not item.boost_id:
+        dialogs.showMessage("This item cannot be boosted.")
+        return
+
+    status = client.boost_status(item.boost_id)
+    dialogs.showMessage(f"Boosted:\n{render_status(status)}")
 
 
 def account_mention(acct: str) -> str:

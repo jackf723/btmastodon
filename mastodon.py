@@ -122,6 +122,12 @@ class MastodonClient:
             raise RuntimeError("Unexpected status response")
         return response
 
+    def boost_status(self, status_id: str) -> dict:
+        response = self.http.post(f"/api/v1/statuses/{quote(status_id)}/reblog")
+        if not isinstance(response, dict):
+            raise RuntimeError("Unexpected boost response")
+        return response
+
 
 def authorize_in_browser(instance: str, credentials: ClientCredentials) -> AccountConfig:
     state = secrets.token_urlsafe(32)
