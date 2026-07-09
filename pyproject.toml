@@ -1,0 +1,45 @@
+[build-system]
+requires = [
+    "setuptools",
+    "wheel",
+]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "btmastodon"
+version = "0.1.0"
+description = "A BT Code Project"
+authors = [
+    { name = "" },
+]
+dependencies = []
+classifiers = [
+    "Topic: Other",
+]
+
+[tool.setuptools]
+packages = [
+    "btmastodon",
+]
+include-package-data = true
+
+[tool.setuptools.package-dir]
+btmastodon = "."
+
+[tool.setuptools.package-data]
+"*" = [
+    "*",
+    "**/*",
+]
+
+[tool.setuptools.exclude-package-data]
+"*" = [
+    "**/__pycache__/*",
+    "__pycache__/*",
+    "*.egg-info/*",
+    "**/*.egg-info/*",
+]
+
+[tool.btcode]
+category = "Other"
+original_name = "btmastodon"
