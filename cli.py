@@ -421,11 +421,18 @@ def view_conversation(client: MastodonClient, item: TimelineChoice) -> None:
     ancestors = context_statuses(context, "ancestors")
     descendants = context_statuses(context, "descendants")
 
-    sections: list[str] = []
-    sections.extend(render_status(status) for status in ancestors)
-    sections.append(item.label)
-    sections.extend(render_status(status) for status in descendants)
-    dialogs.showMessage("\n\n".join(section for section in sections if section))
+    conversation_items: list[TimelineChoice] = []
+    conversation_items.extend(
+        timeline_choice_from_status(status, index)
+        for index, status in enumerate(ancestors, 1)
+    )
+    conversation_items.append(item)
+    conversation_items.extend(
+        timeline_choice_from_status(status, index)
+        for index, status in enumerate(descendants, len(conversation_items) + 1)
+    )
+
+    show_timeline_menu(client, conversation_items, "Conversation")
 
 
 def context_statuses(context: dict, key: str) -> list[dict]:
