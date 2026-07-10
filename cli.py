@@ -14,7 +14,9 @@ from render import (
     notification_reply_target,
     render_notification,
     render_status,
+    has_quote_reference,
     status_links,
+    status_quote_url,
     status_reply_target,
 )
 
@@ -30,9 +32,12 @@ class TimelineChoice:
     reply_to_id: str
     reply_to_acct: str
     boost_id: str
+    quote_id: str
+    quote_url: str
     page_id: str
     author_id: str
     author_acct: str
+    author_is_known_followed: bool = False
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -79,11 +84,22 @@ def build_parser() -> argparse.ArgumentParser:
         choices=["public", "unlisted", "private", "direct"],
         default="public",
     )
+    post_parser.add_argument("--quote-status-id", help="Status ID to quote")
     post_parser.set_defaults(func=post)
 
     boost_parser = subcommands.add_parser("boost", help="Boost a status")
     boost_parser.add_argument("status_id", help="Status ID to boost")
     boost_parser.set_defaults(func=boost)
+
+    quote_parser = subcommands.add_parser("quote", help="Quote a status")
+    quote_parser.add_argument("status_id", help="Status ID to quote")
+    quote_parser.add_argument("status", help="Status text to post")
+    quote_parser.add_argument(
+        "--visibility",
+        choices=["public", "unlisted", "private", "direct"],
+        default="public",
+    )
+    quote_parser.set_defaults(func=quote)
 
     settings_parser = subcommands.add_parser("settings", help="Change preferences")
     settings_parser.set_defaults(func=settings)
@@ -231,6 +247,7 @@ def notifications(args: argparse.Namespace) -> int:
     config = load_config()
     client = MastodonClient(config)
     items = client.notifications(args.limit)
+    enrich_quoted_notifications(client, items)
     show_timeline_menu(
         client,
         [
@@ -246,12 +263,27 @@ def notifications(args: argparse.Namespace) -> int:
 
 def post(args: argparse.Namespace) -> int:
     client = MastodonClient(load_config())
+    status_text = args.status
+    quote_status_id = getattr(args, "quote_status_id", None)
+    if quote_status_id:
+        status_text = quote_status_text(client, quote_status_id, status_text)
+
     status = client.post_status(
-        args.status,
+        status_text,
         args.visibility,
         getattr(args, "in_reply_to_id", None),
     )
-    dialogs.showMessage(f"Posted:\n{render_status(status)}")
+    dialogs.showMessage(posted_status_message("Posted", status))
+    return 0
+
+
+def quote(args: argparse.Namespace) -> int:
+    client = MastodonClient(load_config())
+    status = client.post_status(
+        quote_status_text(client, args.status_id, args.status),
+        args.visibility,
+    )
+    dialogs.showMessage(posted_status_message("Quoted", status))
     return 0
 
 
@@ -260,6 +292,58 @@ def boost(args: argparse.Namespace) -> int:
     status = client.boost_status(args.status_id)
     dialogs.showMessage(f"Boosted:\n{render_status(status)}")
     return 0
+
+
+def posted_status_message(action: str, status: dict, quoted_status_id: str | None = None) -> str:
+    message = f"{action}:\n{render_status(status)}"
+    if quoted_status_id and not has_quote_reference(status):
+        message += (
+            "\n\nQuote warning: the server did not return quote data. "
+            "It may not support quote posts or may have ignored the quote request."
+        )
+    return message
+
+
+def quote_status_text(client: MastodonClient, quoted_status_id: str, text: str) -> str:
+    quoted = client.status(quoted_status_id)
+    url = status_url(quoted)
+    if not url:
+        raise RuntimeError("Quoted status does not have a URL")
+    return f"RE: {url}\n\n{text}"
+
+
+def status_url(status: dict) -> str:
+    source = status.get("reblog") or status
+    return str(source.get("url") or source.get("uri") or "").strip()
+
+
+def enrich_quoted_statuses(client: MastodonClient, statuses: list[dict]) -> None:
+    for status in statuses:
+        source = status.get("reblog") or status
+        if not isinstance(source, dict):
+            continue
+        if source.get("quoted_status") or source.get("quote_status"):
+            continue
+
+        quote_url = status_quote_url(source)
+        if not quote_url:
+            continue
+
+        try:
+            quoted = client.resolve_status_url(quote_url)
+        except (ApiError, RuntimeError):
+            quoted = None
+        if quoted:
+            source["quoted_status"] = quoted
+
+
+def enrich_quoted_notifications(client: MastodonClient, notifications: list[dict]) -> None:
+    statuses: list[dict] = []
+    for notification in notifications:
+        status = notification.get("status")
+        if isinstance(status, dict):
+            statuses.append(status)
+    enrich_quoted_statuses(client, statuses)
 
 
 def settings(_: argparse.Namespace) -> int:
@@ -296,18 +380,23 @@ def timeline_choice_from_status(
     index: int,
     show_numbers: bool = True,
     show_usernames: bool = True,
+    author_is_known_followed: bool = False,
 ) -> TimelineChoice:
     reply_to_id, reply_to_acct = status_reply_target(status)
     author_id, author_acct = status_author_target(status)
+    source = status.get("reblog") or status
     return TimelineChoice(
         render_status(status, index if show_numbers else None, show_usernames),
         status_links(status),
         reply_to_id,
         reply_to_acct,
         reply_to_id,
+        reply_to_id,
+        status_url(source),
         str(status.get("id") or ""),
         author_id,
         author_acct,
+        author_is_known_followed,
     )
 
 
@@ -324,6 +413,8 @@ def timeline_choice_from_notification(
         reply_to_id,
         reply_to_acct,
         reply_to_id,
+        reply_to_id,
+        "",
         "",
         author_id,
         author_acct,
@@ -337,8 +428,15 @@ def show_home_timeline_menu(
     show_numbers: bool,
     show_usernames: bool,
 ) -> None:
+    enrich_quoted_statuses(client, statuses)
     items = [
-        timeline_choice_from_status(status, index, show_numbers, show_usernames)
+        timeline_choice_from_status(
+            status,
+            index,
+            show_numbers,
+            show_usernames,
+            author_is_known_followed=not bool(status.get("reblog")),
+        )
         for index, status in enumerate(statuses, 1)
     ]
 
@@ -362,8 +460,15 @@ def show_home_timeline_menu(
                 dialogs.showMessage("No more timeline items to load.")
                 continue
 
+            enrich_quoted_statuses(client, next_statuses)
             items = [
-                timeline_choice_from_status(status, index, show_numbers, show_usernames)
+                timeline_choice_from_status(
+                    status,
+                    index,
+                    show_numbers,
+                    show_usernames,
+                    author_is_known_followed=not bool(status.get("reblog")),
+                )
                 for index, status in enumerate(next_statuses, 1)
             ]
             continue
@@ -430,14 +535,20 @@ def open_timeline_choice(
     show_usernames: bool = True,
 ) -> None:
     actions = []
+    author_relationship = toot_author_relationship(client, item)
     if item.links:
         actions.append("Open Link")
     if item.reply_to_id:
         actions.append("Reply")
     if item.boost_id:
         actions.append("Boost")
-    if should_offer_follow_author(client, item):
+    if item.quote_id:
+        actions.append("Quote")
+    author_is_followed = should_offer_unfollow_author(author_relationship) or item.author_is_known_followed
+    if should_offer_follow_author(author_relationship, author_is_followed):
         actions.append("Follow Author")
+    elif author_is_followed:
+        actions.append("Unfollow Author")
     actions.extend(["View Conversation", BACK_CHOICE])
 
     choice = dialogs.request_choice(actions, "Toot Actions")
@@ -450,18 +561,33 @@ def open_timeline_choice(
         reply_to_toot(item)
     elif choice == "boost":
         boost_toot(client, item)
+    elif choice == "quote":
+        quote_toot(item)
     elif choice == "follow author":
         follow_toot_author(client, item)
+    elif choice == "unfollow author":
+        unfollow_toot_author(client, item)
     elif choice == "view conversation":
         view_conversation(client, item, show_numbers, show_usernames)
 
 
-def should_offer_follow_author(client: MastodonClient, item: TimelineChoice) -> bool:
+def toot_author_relationship(client: MastodonClient, item: TimelineChoice) -> dict:
     if not item.author_id:
-        return False
+        return {}
 
-    relationship = client.account_relationship(item.author_id)
+    return client.account_relationship(item.author_id)
+
+
+def should_offer_follow_author(relationship: dict, author_is_followed: bool = False) -> bool:
+    if author_is_followed:
+        return False
+    if not relationship:
+        return False
     return not bool(relationship.get("following") or relationship.get("requested"))
+
+
+def should_offer_unfollow_author(relationship: dict) -> bool:
+    return bool(relationship.get("following"))
 
 
 def open_timeline_links(links: list[str]) -> None:
@@ -500,6 +626,7 @@ def reply_to_toot(item: TimelineChoice) -> None:
             status=reply,
             visibility=visibility,
             in_reply_to_id=item.reply_to_id,
+            quote_status_id=None,
         )
     )
 
@@ -511,6 +638,25 @@ def boost_toot(client: MastodonClient, item: TimelineChoice) -> None:
 
     status = client.boost_status(item.boost_id)
     dialogs.showMessage(f"Boosted:\n{render_status(status)}")
+
+
+def quote_toot(item: TimelineChoice) -> None:
+    if not item.quote_url:
+        dialogs.showMessage("This item cannot be quoted.")
+        return
+
+    text = prompt("Quote text: ")
+    if text is None:
+        return
+    visibility = prompt_visibility()
+    post(
+        argparse.Namespace(
+            status=f"RE: {item.quote_url}\n\n{text}",
+            visibility=visibility,
+            in_reply_to_id=None,
+            quote_status_id=None,
+        )
+    )
 
 
 def follow_toot_author(client: MastodonClient, item: TimelineChoice) -> None:
@@ -526,6 +672,16 @@ def follow_toot_author(client: MastodonClient, item: TimelineChoice) -> None:
         dialogs.showMessage(f"Follow request sent to {author}.")
     else:
         dialogs.showMessage(f"Followed {author}.")
+
+
+def unfollow_toot_author(client: MastodonClient, item: TimelineChoice) -> None:
+    if not item.author_id:
+        dialogs.showMessage("This item does not have an author to unfollow.")
+        return
+
+    client.unfollow_account(item.author_id)
+    author = account_mention(item.author_acct) or "author"
+    dialogs.showMessage(f"Unfollowed {author}.")
 
 
 def account_mention(acct: str) -> str:
@@ -573,13 +729,25 @@ def view_conversation(
     context = client.status_context(item.reply_to_id)
     ancestors = context_statuses(context, "ancestors")
     descendants = context_statuses(context, "descendants")
+    selected_status = client.status(item.reply_to_id)
+    enrich_quoted_statuses(client, ancestors)
+    enrich_quoted_statuses(client, [selected_status])
+    enrich_quoted_statuses(client, descendants)
 
     conversation_items: list[TimelineChoice] = []
     conversation_items.extend(
         timeline_choice_from_status(status, index, show_numbers, show_usernames)
         for index, status in enumerate(ancestors, 1)
     )
-    conversation_items.append(item)
+    conversation_items.append(
+        timeline_choice_from_status(
+            selected_status,
+            len(conversation_items) + 1,
+            show_numbers,
+            show_usernames,
+            author_is_known_followed=item.author_is_known_followed,
+        )
+    )
     conversation_items.extend(
         timeline_choice_from_status(status, index, show_numbers, show_usernames)
         for index, status in enumerate(descendants, len(conversation_items) + 1)

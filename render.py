@@ -10,6 +10,8 @@ from urllib.parse import urlparse
 TAG_RE = re.compile(r"<[^>]+>")
 SPACE_RE = re.compile(r"[ \t\r\f\v]+")
 BLANK_LINE_RE = re.compile(r"\n{3,}")
+URL_RE = re.compile(r"https?://\S+")
+QUOTE_PREFIX_RE = re.compile(r"^\s*re:\s*", re.IGNORECASE)
 
 
 class _LinkParser(HTMLParser):
@@ -59,6 +61,12 @@ def status_links(status: dict) -> list[str]:
             urls.append(str(attachment.get("url") or attachment.get("remote_url") or ""))
 
     urls.append(str(source.get("url") or source.get("uri") or ""))
+    quote_url = status_quote_url(source)
+    if quote_url:
+        urls.append(quote_url)
+    quoted = quoted_status(source)
+    if quoted:
+        urls.extend(status_links(quoted))
     return unique_urls(urls)
 
 
@@ -123,10 +131,19 @@ def render_status(
     index: int | None = None,
     show_username: bool = True,
 ) -> str:
+    return _render_status(status, index, show_username, include_quote=True)
+
+
+def _render_status(
+    status: dict,
+    index: int | None = None,
+    show_username: bool = True,
+    include_quote: bool = True,
+) -> str:
     source = status.get("reblog") or status
     account = source.get("account") or {}
     prefix = f"{index}. " if index is not None else ""
-    content = plain_text(str(source.get("content") or ""))
+    content = status_content(source)
     spoiler = plain_text(str(source.get("spoiler_text") or ""))
 
     lines: list[str] = []
@@ -145,11 +162,149 @@ def render_status(
         booster = account_name(status.get("account") or {}, show_username)
         lines.append(f"boosted by {booster}")
 
+    if include_quote:
+        quoted = quoted_status(source)
+        if quoted:
+            rendered_quote = _render_status(quoted, None, show_username, include_quote=False)
+            if rendered_quote:
+                lines.append(f"quoted toot:\n{indent_text(rendered_quote)}")
+        else:
+            quote_note = quoted_status_note(source)
+            if quote_note:
+                lines.append(f"quoted toot: {quote_note}")
     published = relative_time(str(source.get("created_at") or ""))
     if published:
         lines.append(f"published {published}")
 
     return "\n".join(line for line in lines if line).strip()
+
+
+def status_content(status: dict) -> str:
+    content = plain_text(str(status.get("content") or ""))
+    if not status_quote_url(status):
+        return content
+    return remove_quote_prefix(content).strip()
+
+
+def status_quote_url(status: dict) -> str:
+    source = status.get("reblog") or status
+    content = str(source.get("content") or "")
+    text = plain_text(content)
+    if not QUOTE_PREFIX_RE.match(text):
+        return ""
+
+    text_after_prefix = QUOTE_PREFIX_RE.sub("", text, count=1).strip()
+    match = URL_RE.match(text_after_prefix)
+    if match:
+        return clean_url(match.group(0))
+
+    links = html_links(content)
+    return links[0] if links else ""
+
+
+def remove_quote_prefix(content: str) -> str:
+    if not QUOTE_PREFIX_RE.match(content):
+        return content
+
+    remainder = QUOTE_PREFIX_RE.sub("", content, count=1).lstrip()
+    match = URL_RE.match(remainder)
+    if match:
+        return remainder[match.end() :].lstrip(" \t\r\n")
+
+    lines = remainder.splitlines()
+    if len(lines) > 1:
+        return "\n".join(lines[1:]).lstrip()
+    return ""
+
+
+def clean_url(url: str) -> str:
+    return url.rstrip(".,;:!?)\"]}'")
+
+
+def has_quote_reference(status: dict) -> bool:
+    source = status.get("reblog") or status
+    if status_quote_url(source):
+        return True
+    if quoted_status(source):
+        return True
+
+    quote = source.get("quote")
+    if isinstance(quote, dict) and quote:
+        return True
+
+    for key in (
+        "quoted_status_id",
+        "quote_status_id",
+        "quote_id",
+        "quote_url",
+        "quoted_status_url",
+    ):
+        if source.get(key):
+            return True
+    return False
+
+
+def quoted_status(status: dict) -> dict | None:
+    quote = status.get("quote")
+    if isinstance(quote, dict):
+        for key in ("quoted_status", "status", "quotedStatus"):
+            quoted = quote.get(key)
+            if isinstance(quoted, dict):
+                return quoted
+
+    for key in ("quoted_status", "quote_status", "quotedStatus"):
+        quoted = status.get(key)
+        if isinstance(quoted, dict):
+            return quoted
+    return None
+
+
+def quoted_status_note(status: dict) -> str:
+    quote = status.get("quote")
+    if isinstance(quote, dict):
+        state = str(quote.get("state") or "").strip().lower()
+        quote_url = quote_reference(quote, ("url", "uri"))
+        quote_id = quote_reference(
+            quote,
+            ("quoted_status_id", "status_id", "id", "quotedStatusId"),
+        )
+
+        if state in {"deleted", "unauthorized", "rejected", "revoked"}:
+            return append_quote_reference(state, quote_url or quote_id)
+        if state and not quoted_status(status):
+            return append_quote_reference(state, quote_url or quote_id)
+        if quote_url or quote_id:
+            return append_quote_reference("unavailable", quote_url or quote_id)
+
+    quote_url = quote_reference(status, ("quote_url", "quoted_status_url"))
+    re_quote_url = status_quote_url(status)
+    quote_id = quote_reference(
+        status,
+        ("quoted_status_id", "quote_status_id", "quote_id", "quotedStatusId"),
+    )
+    if quote_url or re_quote_url or quote_id:
+        return append_quote_reference("unavailable", quote_url or re_quote_url or quote_id)
+    return ""
+
+
+def quote_reference(source: dict, keys: tuple[str, ...]) -> str:
+    for key in keys:
+        value = str(source.get(key) or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def append_quote_reference(note: str, reference: str) -> str:
+    if not reference:
+        return note
+    if is_web_url(reference):
+        return f"{note} {reference}"
+    return f"{note} status {reference}"
+
+
+def indent_text(value: str) -> str:
+    return "\n".join(f"  {line}" if line else line for line in value.splitlines())
 
 
 def render_notification(notification: dict, index: int | None = None) -> str:

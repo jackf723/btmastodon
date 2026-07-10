@@ -104,11 +104,39 @@ class MastodonClient:
             raise RuntimeError("Unexpected status context response")
         return response
 
+    def status(self, status_id: str) -> dict:
+        response = self.http.get(f"/api/v1/statuses/{quote(status_id)}")
+        if not isinstance(response, dict):
+            raise RuntimeError("Unexpected status response")
+        return response
+
+    def resolve_status_url(self, url: str) -> dict | None:
+        response = self.http.get(
+            "/api/v2/search",
+            {
+                "q": url,
+                "type": "statuses",
+                "resolve": "true",
+                "limit": 1,
+            },
+        )
+        if not isinstance(response, dict):
+            raise RuntimeError("Unexpected search response")
+
+        statuses = response.get("statuses")
+        if not isinstance(statuses, list):
+            return None
+        for status in statuses:
+            if isinstance(status, dict):
+                return status
+        return None
+
     def post_status(
         self,
         status: str,
         visibility: str = "public",
         in_reply_to_id: str | None = None,
+        quoted_status_id: str | None = None,
     ) -> dict:
         form = {
             "status": status,
@@ -116,6 +144,8 @@ class MastodonClient:
         }
         if in_reply_to_id:
             form["in_reply_to_id"] = in_reply_to_id
+        if quoted_status_id:
+            form["quoted_status_id"] = quoted_status_id
 
         response = self.http.post("/api/v1/statuses", form)
         if not isinstance(response, dict):
@@ -145,6 +175,12 @@ class MastodonClient:
         response = self.http.post(f"/api/v1/accounts/{quote(account_id)}/follow")
         if not isinstance(response, dict):
             raise RuntimeError("Unexpected follow response")
+        return response
+
+    def unfollow_account(self, account_id: str) -> dict:
+        response = self.http.post(f"/api/v1/accounts/{quote(account_id)}/unfollow")
+        if not isinstance(response, dict):
+            raise RuntimeError("Unexpected unfollow response")
         return response
 
 
