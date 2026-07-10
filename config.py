@@ -22,6 +22,7 @@ class AccountConfig:
     access_token: str
     client: ClientCredentials
     show_toot_numbers: bool = True
+    show_toot_usernames: bool = True
 
 
 def config_dir() -> Path:
@@ -59,6 +60,9 @@ def load_config(path: Path | None = None) -> AccountConfig:
             access_token=raw["access_token"],
             client=client,
             show_toot_numbers=bool(raw.get("show_toot_numbers", True)),
+            show_toot_usernames=bool(
+                raw.get("show_toot_usernames", raw.get("show_toot_accounts", True))
+            ),
         )
     except KeyError as exc:
         raise ConfigError(f"Config file is missing required key: {exc}") from exc
@@ -75,6 +79,7 @@ def save_config(config: AccountConfig, path: Path | None = None) -> Path:
             "client_secret": config.client.client_secret,
         },
         "show_toot_numbers": config.show_toot_numbers,
+        "show_toot_usernames": config.show_toot_usernames,
     }
     path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
     return path

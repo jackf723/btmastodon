@@ -178,6 +178,19 @@ def prompt_show_toot_numbers(current: bool) -> bool | None:
     return value == "show toot numbers"
 
 
+def prompt_show_toot_usernames(current: bool) -> bool | None:
+    current_label = "Show" if current else "Hide"
+    choices = ["Show Usernames", "Display Names Only", BACK_CHOICE]
+    choice = dialogs.request_choice(choices, f"Toot Usernames Currently {current_label}")
+    if choice is None:
+        return None
+
+    value = choice.label.strip().lower()
+    if value == BACK_CHOICE.lower():
+        return None
+    return value == "show usernames"
+
+
 def login(args: argparse.Namespace) -> int:
     credentials = register_app(args.instance)
     config = authorize_in_browser(args.instance, credentials)
@@ -204,7 +217,13 @@ def timeline(args: argparse.Namespace) -> int:
     config = load_config()
     client = MastodonClient(config)
     statuses = client.home_timeline(args.limit)
-    show_home_timeline_menu(client, statuses, args.limit, config.show_toot_numbers)
+    show_home_timeline_menu(
+        client,
+        statuses,
+        args.limit,
+        config.show_toot_numbers,
+        config.show_toot_usernames,
+    )
     return 0
 
 
@@ -220,6 +239,7 @@ def notifications(args: argparse.Namespace) -> int:
         ],
         "Notifications",
         config.show_toot_numbers,
+        config.show_toot_usernames,
     )
     return 0
 
@@ -244,13 +264,30 @@ def boost(args: argparse.Namespace) -> int:
 
 def settings(_: argparse.Namespace) -> int:
     config = load_config()
-    show_toot_numbers = prompt_show_toot_numbers(config.show_toot_numbers)
-    if show_toot_numbers is None:
+    choices = ["Toot Numbers", "Toot Usernames", BACK_CHOICE]
+    choice = dialogs.request_choice(choices, "Settings")
+    if choice is None:
         return 0
 
-    save_config(replace(config, show_toot_numbers=show_toot_numbers))
-    state = "shown" if show_toot_numbers else "hidden"
-    dialogs.showMessage(f"Toot numbers will be {state}.")
+    value = choice.label.strip().lower()
+    if value == BACK_CHOICE.lower():
+        return 0
+    if value == "toot numbers":
+        show_toot_numbers = prompt_show_toot_numbers(config.show_toot_numbers)
+        if show_toot_numbers is None:
+            return 0
+
+        save_config(replace(config, show_toot_numbers=show_toot_numbers))
+        state = "shown" if show_toot_numbers else "hidden"
+        dialogs.showMessage(f"Toot numbers will be {state}.")
+    elif value == "toot usernames":
+        show_toot_usernames = prompt_show_toot_usernames(config.show_toot_usernames)
+        if show_toot_usernames is None:
+            return 0
+
+        save_config(replace(config, show_toot_usernames=show_toot_usernames))
+        state = "shown" if show_toot_usernames else "hidden"
+        dialogs.showMessage(f"Toot usernames will be {state}.")
     return 0
 
 
@@ -258,11 +295,12 @@ def timeline_choice_from_status(
     status: dict,
     index: int,
     show_numbers: bool = True,
+    show_usernames: bool = True,
 ) -> TimelineChoice:
     reply_to_id, reply_to_acct = status_reply_target(status)
     author_id, author_acct = status_author_target(status)
     return TimelineChoice(
-        render_status(status, index if show_numbers else None),
+        render_status(status, index if show_numbers else None, show_usernames),
         status_links(status),
         reply_to_id,
         reply_to_acct,
@@ -297,9 +335,10 @@ def show_home_timeline_menu(
     statuses: list[dict],
     limit: int,
     show_numbers: bool,
+    show_usernames: bool,
 ) -> None:
     items = [
-        timeline_choice_from_status(status, index, show_numbers)
+        timeline_choice_from_status(status, index, show_numbers, show_usernames)
         for index, status in enumerate(statuses, 1)
     ]
 
@@ -324,12 +363,12 @@ def show_home_timeline_menu(
                 continue
 
             items = [
-                timeline_choice_from_status(status, index, show_numbers)
+                timeline_choice_from_status(status, index, show_numbers, show_usernames)
                 for index, status in enumerate(next_statuses, 1)
             ]
             continue
 
-        open_timeline_choice(client, choice, show_numbers)
+        open_timeline_choice(client, choice, show_numbers, show_usernames)
 
 
 def show_timeline_menu(
@@ -337,12 +376,13 @@ def show_timeline_menu(
     items: list[TimelineChoice],
     title: str,
     show_numbers: bool = True,
+    show_usernames: bool = True,
 ) -> None:
     while True:
         choice = request_timeline_choice(items, title)
         if choice is None:
             return
-        open_timeline_choice(client, choice, show_numbers)
+        open_timeline_choice(client, choice, show_numbers, show_usernames)
 
 
 def request_timeline_choice(
@@ -387,6 +427,7 @@ def open_timeline_choice(
     client: MastodonClient,
     item: TimelineChoice,
     show_numbers: bool = True,
+    show_usernames: bool = True,
 ) -> None:
     actions = []
     if item.links:
@@ -412,7 +453,7 @@ def open_timeline_choice(
     elif choice == "follow author":
         follow_toot_author(client, item)
     elif choice == "view conversation":
-        view_conversation(client, item, show_numbers)
+        view_conversation(client, item, show_numbers, show_usernames)
 
 
 def should_offer_follow_author(client: MastodonClient, item: TimelineChoice) -> bool:
@@ -523,6 +564,7 @@ def view_conversation(
     client: MastodonClient,
     item: TimelineChoice,
     show_numbers: bool = True,
+    show_usernames: bool = True,
 ) -> None:
     if not item.reply_to_id:
         dialogs.showMessage(item.label)
@@ -534,16 +576,22 @@ def view_conversation(
 
     conversation_items: list[TimelineChoice] = []
     conversation_items.extend(
-        timeline_choice_from_status(status, index, show_numbers)
+        timeline_choice_from_status(status, index, show_numbers, show_usernames)
         for index, status in enumerate(ancestors, 1)
     )
     conversation_items.append(item)
     conversation_items.extend(
-        timeline_choice_from_status(status, index, show_numbers)
+        timeline_choice_from_status(status, index, show_numbers, show_usernames)
         for index, status in enumerate(descendants, len(conversation_items) + 1)
     )
 
-    show_timeline_menu(client, conversation_items, "Conversation", show_numbers)
+    show_timeline_menu(
+        client,
+        conversation_items,
+        "Conversation",
+        show_numbers,
+        show_usernames,
+    )
 
 
 def context_statuses(context: dict, key: str) -> list[dict]:

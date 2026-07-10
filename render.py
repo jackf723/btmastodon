@@ -108,33 +108,41 @@ def is_web_url(url: str) -> bool:
     return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
 
 
-def account_name(account: dict) -> str:
+def account_name(account: dict, show_username: bool = True) -> str:
     display_name = plain_text(str(account.get("display_name") or ""))
     acct = str(account.get("acct") or account.get("username") or "unknown")
-    if display_name:
+    if display_name and show_username:
         return f"{display_name} @{acct}"
+    if display_name:
+        return display_name
     return f"@{acct}"
 
 
-def render_status(status: dict, index: int | None = None) -> str:
+def render_status(
+    status: dict,
+    index: int | None = None,
+    show_username: bool = True,
+) -> str:
     source = status.get("reblog") or status
     account = source.get("account") or {}
     prefix = f"{index}. " if index is not None else ""
-    lines = [
-        f"{prefix}{account_name(account)}",
-        plain_text(str(source.get("content") or "")),
-    ]
-
+    content = plain_text(str(source.get("content") or ""))
     spoiler = plain_text(str(source.get("spoiler_text") or ""))
+
+    lines: list[str] = []
+    lines.append(f"{prefix}{account_name(account, show_username)}")
+
     if spoiler:
-        lines.insert(1, f"content warning: {spoiler}")
+        lines.append(f"content warning: {spoiler}")
+    if content:
+        lines.append(content)
 
     attachments = source.get("media_attachments") or []
     if attachments:
         lines.append(f"attachments: {len(attachments)}")
 
     if status.get("reblog"):
-        booster = account_name(status.get("account") or {})
+        booster = account_name(status.get("account") or {}, show_username)
         lines.append(f"boosted by {booster}")
 
     published = relative_time(str(source.get("created_at") or ""))
