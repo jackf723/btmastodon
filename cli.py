@@ -121,9 +121,11 @@ def menu() -> int:
             elif choice == "4":
                 whoami(argparse.Namespace())
             elif choice == "post status":
-                status = prompt_required("Status text: ")
-                visibility = prompt_visibility()
-                post(argparse.Namespace(status=status, visibility=visibility))
+                status = prompt("Status text: ")
+                if status!=None:
+                    
+                    visibility = prompt_visibility()
+                    post(argparse.Namespace(status=status, visibility=visibility))
             else:
                 print("Unknown choice.")
         except EOFError:
@@ -379,7 +381,9 @@ def reply_to_toot(item: TimelineChoice) -> None:
         return
 
     mention = account_mention(item.reply_to_acct)
-    reply = prompt_required(f"Reply {mention}: " if mention else "Reply: ")
+    reply = prompt(f"Reply {mention}: " if mention else "Reply: ")
+    if reply==None:
+        return
     if mention and not reply_mentions_account(reply, mention):
         reply = f"{mention} {reply}"
     visibility = prompt_visibility()
