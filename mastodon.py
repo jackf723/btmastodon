@@ -128,6 +128,25 @@ class MastodonClient:
             raise RuntimeError("Unexpected boost response")
         return response
 
+    def account_relationship(self, account_id: str) -> dict:
+        response = self.http.get(
+            "/api/v1/accounts/relationships",
+            {"id[]": account_id},
+        )
+        if (
+            not isinstance(response, list)
+            or not response
+            or not isinstance(response[0], dict)
+        ):
+            raise RuntimeError("Unexpected account relationship response")
+        return response[0]
+
+    def follow_account(self, account_id: str) -> dict:
+        response = self.http.post(f"/api/v1/accounts/{quote(account_id)}/follow")
+        if not isinstance(response, dict):
+            raise RuntimeError("Unexpected follow response")
+        return response
+
 
 def authorize_in_browser(instance: str, credentials: ClientCredentials) -> AccountConfig:
     state = secrets.token_urlsafe(32)

@@ -3,7 +3,7 @@ from BTSpeak import dialogs
 
 import argparse
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from config import ConfigError, load_config, save_config
 from api import ApiError
@@ -31,6 +31,8 @@ class TimelineChoice:
     reply_to_acct: str
     boost_id: str
     page_id: str
+    author_id: str
+    author_acct: str
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -83,6 +85,9 @@ def build_parser() -> argparse.ArgumentParser:
     boost_parser.add_argument("status_id", help="Status ID to boost")
     boost_parser.set_defaults(func=boost)
 
+    settings_parser = subcommands.add_parser("settings", help="Change preferences")
+    settings_parser.set_defaults(func=settings)
+
     return parser
 
 
@@ -97,7 +102,7 @@ def menu() -> int:
         #5. Post a status
         #q. Quit""")
         try:                        
-            choices=["Login","Home Timeline","Notifications","Post Status","Quit"]
+            choices=["Login","Home Timeline","Notifications","Post Status","Settings","Quit"]
             choice = dialogs.request_choice(choices,"Welcome to Mastodon")
             if choice==None:
                 return 0
@@ -126,6 +131,8 @@ def menu() -> int:
                     
                     visibility = prompt_visibility()
                     post(argparse.Namespace(status=status, visibility=visibility))
+            elif choice == "settings":
+                settings(argparse.Namespace())
             else:
                 print("Unknown choice.")
         except EOFError:
@@ -158,6 +165,19 @@ def prompt_visibility() -> str:
     return dialogs.request_choice(choices, "Visibility").label.strip().lower()
 
 
+def prompt_show_toot_numbers(current: bool) -> bool | None:
+    current_label = "Show" if current else "Hide"
+    choices = ["Show Toot Numbers", "Hide Toot Numbers", BACK_CHOICE]
+    choice = dialogs.request_choice(choices, f"Toot Numbers Currently {current_label}")
+    if choice is None:
+        return None
+
+    value = choice.label.strip().lower()
+    if value == BACK_CHOICE.lower():
+        return None
+    return value == "show toot numbers"
+
+
 def login(args: argparse.Namespace) -> int:
     credentials = register_app(args.instance)
     config = authorize_in_browser(args.instance, credentials)
@@ -181,22 +201,25 @@ def whoami(_: argparse.Namespace) -> int:
 
 
 def timeline(args: argparse.Namespace) -> int:
-    client = MastodonClient(load_config())
+    config = load_config()
+    client = MastodonClient(config)
     statuses = client.home_timeline(args.limit)
-    show_home_timeline_menu(client, statuses, args.limit)
+    show_home_timeline_menu(client, statuses, args.limit, config.show_toot_numbers)
     return 0
 
 
 def notifications(args: argparse.Namespace) -> int:
-    client = MastodonClient(load_config())
+    config = load_config()
+    client = MastodonClient(config)
     items = client.notifications(args.limit)
     show_timeline_menu(
         client,
         [
-            timeline_choice_from_notification(item, index)
+            timeline_choice_from_notification(item, index, config.show_toot_numbers)
             for index, item in enumerate(items, 1)
         ],
         "Notifications",
+        config.show_toot_numbers,
     )
     return 0
 
@@ -219,27 +242,53 @@ def boost(args: argparse.Namespace) -> int:
     return 0
 
 
-def timeline_choice_from_status(status: dict, index: int) -> TimelineChoice:
+def settings(_: argparse.Namespace) -> int:
+    config = load_config()
+    show_toot_numbers = prompt_show_toot_numbers(config.show_toot_numbers)
+    if show_toot_numbers is None:
+        return 0
+
+    save_config(replace(config, show_toot_numbers=show_toot_numbers))
+    state = "shown" if show_toot_numbers else "hidden"
+    dialogs.showMessage(f"Toot numbers will be {state}.")
+    return 0
+
+
+def timeline_choice_from_status(
+    status: dict,
+    index: int,
+    show_numbers: bool = True,
+) -> TimelineChoice:
     reply_to_id, reply_to_acct = status_reply_target(status)
+    author_id, author_acct = status_author_target(status)
     return TimelineChoice(
-        render_status(status, index),
+        render_status(status, index if show_numbers else None),
         status_links(status),
         reply_to_id,
         reply_to_acct,
         reply_to_id,
         str(status.get("id") or ""),
+        author_id,
+        author_acct,
     )
 
 
-def timeline_choice_from_notification(notification: dict, index: int) -> TimelineChoice:
+def timeline_choice_from_notification(
+    notification: dict,
+    index: int,
+    show_numbers: bool = True,
+) -> TimelineChoice:
     reply_to_id, reply_to_acct = notification_reply_target(notification)
+    author_id, author_acct = notification_author_target(notification)
     return TimelineChoice(
-        render_notification(notification, index),
+        render_notification(notification, index if show_numbers else None),
         notification_links(notification),
         reply_to_id,
         reply_to_acct,
         reply_to_id,
         "",
+        author_id,
+        author_acct,
     )
 
 
@@ -247,9 +296,10 @@ def show_home_timeline_menu(
     client: MastodonClient,
     statuses: list[dict],
     limit: int,
+    show_numbers: bool,
 ) -> None:
     items = [
-        timeline_choice_from_status(status, index)
+        timeline_choice_from_status(status, index, show_numbers)
         for index, status in enumerate(statuses, 1)
     ]
 
@@ -274,24 +324,25 @@ def show_home_timeline_menu(
                 continue
 
             items = [
-                timeline_choice_from_status(status, index)
+                timeline_choice_from_status(status, index, show_numbers)
                 for index, status in enumerate(next_statuses, 1)
             ]
             continue
 
-        open_timeline_choice(client, choice)
+        open_timeline_choice(client, choice, show_numbers)
 
 
 def show_timeline_menu(
     client: MastodonClient,
     items: list[TimelineChoice],
     title: str,
+    show_numbers: bool = True,
 ) -> None:
     while True:
         choice = request_timeline_choice(items, title)
         if choice is None:
             return
-        open_timeline_choice(client, choice)
+        open_timeline_choice(client, choice, show_numbers)
 
 
 def request_timeline_choice(
@@ -332,7 +383,11 @@ def last_page_id(items: list[TimelineChoice]) -> str:
     return ""
 
 
-def open_timeline_choice(client: MastodonClient, item: TimelineChoice) -> None:
+def open_timeline_choice(
+    client: MastodonClient,
+    item: TimelineChoice,
+    show_numbers: bool = True,
+) -> None:
     actions = []
     if item.links:
         actions.append("Open Link")
@@ -340,6 +395,8 @@ def open_timeline_choice(client: MastodonClient, item: TimelineChoice) -> None:
         actions.append("Reply")
     if item.boost_id:
         actions.append("Boost")
+    if should_offer_follow_author(client, item):
+        actions.append("Follow Author")
     actions.extend(["View Conversation", BACK_CHOICE])
 
     choice = dialogs.request_choice(actions, "Toot Actions")
@@ -352,8 +409,18 @@ def open_timeline_choice(client: MastodonClient, item: TimelineChoice) -> None:
         reply_to_toot(item)
     elif choice == "boost":
         boost_toot(client, item)
+    elif choice == "follow author":
+        follow_toot_author(client, item)
     elif choice == "view conversation":
-        view_conversation(client, item)
+        view_conversation(client, item, show_numbers)
+
+
+def should_offer_follow_author(client: MastodonClient, item: TimelineChoice) -> bool:
+    if not item.author_id:
+        return False
+
+    relationship = client.account_relationship(item.author_id)
+    return not bool(relationship.get("following") or relationship.get("requested"))
 
 
 def open_timeline_links(links: list[str]) -> None:
@@ -405,6 +472,21 @@ def boost_toot(client: MastodonClient, item: TimelineChoice) -> None:
     dialogs.showMessage(f"Boosted:\n{render_status(status)}")
 
 
+def follow_toot_author(client: MastodonClient, item: TimelineChoice) -> None:
+    if not item.author_id:
+        dialogs.showMessage("This item does not have an author to follow.")
+        return
+
+    relationship = client.follow_account(item.author_id)
+    author = account_mention(item.author_acct) or "author"
+    if relationship.get("following"):
+        dialogs.showMessage(f"Followed {author}.")
+    elif relationship.get("requested"):
+        dialogs.showMessage(f"Follow request sent to {author}.")
+    else:
+        dialogs.showMessage(f"Followed {author}.")
+
+
 def account_mention(acct: str) -> str:
     acct = acct.strip().lstrip("@")
     if not acct:
@@ -412,11 +494,36 @@ def account_mention(acct: str) -> str:
     return f"@{acct}"
 
 
+def status_author_target(status: dict) -> tuple[str, str]:
+    source = status.get("reblog") or status
+    return account_target(source.get("account"))
+
+
+def notification_author_target(notification: dict) -> tuple[str, str]:
+    status = notification.get("status")
+    if isinstance(status, dict):
+        return status_author_target(status)
+    return "", ""
+
+
+def account_target(account: object) -> tuple[str, str]:
+    if not isinstance(account, dict):
+        return "", ""
+    return (
+        str(account.get("id") or ""),
+        str(account.get("acct") or account.get("username") or ""),
+    )
+
+
 def reply_mentions_account(reply: str, mention: str) -> bool:
     return mention.lower() in reply.lower().split()
 
 
-def view_conversation(client: MastodonClient, item: TimelineChoice) -> None:
+def view_conversation(
+    client: MastodonClient,
+    item: TimelineChoice,
+    show_numbers: bool = True,
+) -> None:
     if not item.reply_to_id:
         dialogs.showMessage(item.label)
         return
@@ -427,16 +534,16 @@ def view_conversation(client: MastodonClient, item: TimelineChoice) -> None:
 
     conversation_items: list[TimelineChoice] = []
     conversation_items.extend(
-        timeline_choice_from_status(status, index)
+        timeline_choice_from_status(status, index, show_numbers)
         for index, status in enumerate(ancestors, 1)
     )
     conversation_items.append(item)
     conversation_items.extend(
-        timeline_choice_from_status(status, index)
+        timeline_choice_from_status(status, index, show_numbers)
         for index, status in enumerate(descendants, len(conversation_items) + 1)
     )
 
-    show_timeline_menu(client, conversation_items, "Conversation")
+    show_timeline_menu(client, conversation_items, "Conversation", show_numbers)
 
 
 def context_statuses(context: dict, key: str) -> list[dict]:
